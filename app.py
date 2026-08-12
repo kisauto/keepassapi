@@ -10,9 +10,11 @@ from pydantic import BaseModel
 from pykeepass import PyKeePass, create_database
 
 # 1. Konfiguration aus Umgebungsvariablen laden
-DB_FILE = os.getenv("KEEPASS_DB", "db.kdbx")
+DB_DIR = os.getenv("KEEPASS_DIR", "/app/")
+DB_FILE = DB_DIR + "/db.kdbx"
+BACKUP_DIR = DB_DIR + "/backup"
+
 DB_PASSWORD = os.getenv("KEEPASS_PASSWORD", "somePassw0rd")
-BACKUP_DIR = os.getenv("KEEPASS_BACKUP_DIR", "./backups")
 API_KEY = os.getenv("KEEPASS_API_KEY", "SuperSecure")
 
 API_KEY_NAME = "X-API-Key"
@@ -34,7 +36,6 @@ class PWUpdateEntry(BaseModel):
     hostname: Optional[str] = None
     custom_json: Optional[Dict[str, Any]] = None
 
-# 2. Hilfsfunktionen (MÜSSEN oben stehen)
 def get_api_key(header_key: str = Security(api_key_header)):
     if not header_key or header_key != API_KEY:
         raise HTTPException(
@@ -53,10 +54,6 @@ def parse_custom_json(entry) -> Dict[str, Any]:
     return {}
 
 def save_and_reopen_database():
-    """
-    Erstellt ein Backup, speichert die Daten ab und öffnet die Datei neu,
-    damit alle internen XML-Indizes im RAM garantiert aktuell sind.
-    """
     global kp
     os.makedirs(BACKUP_DIR, exist_ok=True)
     backup_file = os.path.join(BACKUP_DIR, f"{os.path.basename(DB_FILE)}.bak")
@@ -69,7 +66,6 @@ def save_and_reopen_database():
         kp.save(filename=tmp_file)
         os.replace(tmp_file, DB_FILE)
         
-        # Zwingt die App, die Daten-Indizes frisch im RAM zu halten
         kp = PyKeePass(DB_FILE, DB_PASSWORD)
     except Exception as e:
         if os.path.exists(tmp_file):
@@ -89,7 +85,7 @@ except Exception as e:
 
 app = FastAPI()
 
-# 4. API Endpunkte
+# Get one entry / show all entry
 @app.get("/entries/{title}", dependencies=[Depends(get_api_key)])
 @app.get("/entries", dependencies=[Depends(get_api_key)])
 def get_entries(title: Optional[str] = None):
@@ -115,6 +111,7 @@ def get_entries(title: Optional[str] = None):
             }
         raise HTTPException(status_code=404, detail="No entry found")
 
+# Create new entry
 @app.post("/entries", status_code=201, dependencies=[Depends(get_api_key)])
 def add_entry(entry: PWEntry):
     with _write_lock:
@@ -131,6 +128,7 @@ def add_entry(entry: PWEntry):
             raise HTTPException(status_code=500, detail=f"Item can not be created: {e}")
         return entry
 
+# Modify existing entry, the key is the title
 @app.patch("/entries/{title}", dependencies=[Depends(get_api_key)])
 def update_entry(title: str, entry_update: PWUpdateEntry):
     with _write_lock:
